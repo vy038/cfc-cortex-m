@@ -1,0 +1,3 @@
+torch>=2.0
+ncps==1.0.1
+numpy
