@@ -220,6 +220,7 @@ All on hardware, caches on, N=1000, `cfc_step_backbone`, 21,248 MACs:
 | 4 partial accumulators only | 210,953 | 9.93 | beat FMA despite worse instr/MAC |
 | FMA + 4x unroll | 202,043 | 9.51 | |
 | **partial acc + FMA (shipped)** | **169,912** | **8.00** | |
+| fused-input (4 layers, shared input load) | 169,912 | 8.00 | **identical to shipped — no gain** |
 
 Rejected: continued-fraction `tanh` (~8 `vdiv.f32`/call) measured 323,712 —
 **30% slower** than the library it replaced; M4 float divide is
@@ -230,8 +231,36 @@ costs 84.5KB of a 96KB budget — not taken. Measurement is reproducible to
 ~50 cycles (999/1000 calls identical; only the first call differs, +49,
 cold cache).
 
-**Remaining headroom is load bandwidth, not loop structure.** Two loads per
-MAC, nothing reusable in a matrix-vector product; a realistic floor here is
-~3-4 cycles/MAC, not 1. Going further means blocking for data reuse,
-int8/SMLAD quantization, or fewer MACs — different projects, see
-OPTIMIZATION.md's closing section.
+## Fused-input variant: no measurable change
+
+Attempted fusing ff1/ff2/time_a/time_b's shared 128-element input load
+(4 separate calls -> 1 shared loop, input loaded once instead of 4x).
+Confirmed via disassembly: 2.0 -> 1.25 loads/MAC, real reduction (17 -> 12
+instructions per 4 MACs). Confirmed inlined (`nm`), golden tests pass at
+1e-5 both configs (same margin as shipped: max err 5.5e-7 vs shipped's
+3.8e-7). Flash 118336 vs shipped 118656.
+
+**Measured on hardware: 169,912 cycles — identical to shipped. No gain.**
+
+Why: fusing across 4 layers serializes each layer's own accumulation into
+a 128-long chain (vs 32 in the unfused/partial-acc version — each of the 4
+layers only gets its own accumulators reset every 128 elements here,
+instead of every 32 as in the shipped per-layer loop). The saved loads and
+the added chain length canceled out exactly. Confirms the remaining ~8
+cyc/MAC is FPU latency + the one unavoidable weight load per MAC, not
+redundant input loading — the load-side reduction this variant targeted
+was real but not the binding constraint. Not shipped, kept in
+`src/experiments/cfc_fused.c` / `bench-fused` as a documented negative
+result: worth knowing this was tried and didn't work, so it isn't tried
+again on a hunch. **Correction to the "remaining headroom is load
+bandwidth" framing below**: the fused variant proved loads weren't the
+bottleneck either — see "What's left" in OPTIMIZATION.md for the updated
+picture.
+
+**Remaining headroom is FPU latency and the one irreducible weight load
+per MAC, not loop structure and not input-side load count** — a realistic
+floor here is ~3-4 cycles/MAC, not 1. Two structural changes were tried at
+this floor (partial accumulators, input fusion); one won, one was a wash.
+Further gains likely mean changing the arithmetic, not the loop: int8/SMLAD
+quantization, or fewer MACs (a model-size question, not a code question) —
+different projects, see OPTIMIZATION.md's closing section.

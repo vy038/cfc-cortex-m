@@ -181,20 +181,33 @@ symbol check rather than assumed.
 assumes a fully pipelined FMA issuing every cycle with operands already in
 registers. Per MAC, the real cost is:
 
-- **Two loads.** A matrix-vector product touches each weight exactly once,
-  so nothing is reusable across iterations. Eight of ~16 instructions in the
-  inner loop are `vldr`. On a single-issue core, a load cycle is a cycle not
-  spent computing. This is a **load-bandwidth bound**.
+- **Two loads**, one input + one weight. Eight of ~16 instructions in the
+  shipped inner loop are `vldr`. On a single-issue core, a load cycle is a
+  cycle not spent computing.
 - **FPU latency not fully hidden**, even across four chains.
 - **Loop control**, ~4 of 16 instructions doing no arithmetic.
 
-A realistic floor for float32 matrix-vector on this core is roughly **3–4
-cycles/MAC**, not 1. Most of the gap that loop-level work can close has been
-closed. Going meaningfully further means changing the problem, not the loop:
+The load count looked like the obvious next lever — ff1/ff2/time_a/time_b
+all read the *same* 128-element input, so that side isn't actually
+irreducible the way weight loads are (each weight is used exactly once, no
+way around that). **It was tried and it didn't work.**
+`src/experiments/cfc_fused.c` fuses those four layers into one pass:
+input loaded once per element, 4 MACs against it. Confirmed by disassembly
+to actually cut loads (2.0 → 1.25 per MAC, 17 → 12 instructions per 4 MACs)
+— and measured **identical to the shipped version on hardware**, 169,912
+cycles. Fusing across 4 layers stretches each layer's own accumulation from
+a 32-long chain (shipped) to 128-long, and that cost canceled the saved
+loads exactly. **The binding constraint is FPU latency and the one
+unavoidable weight load per MAC, not load count in general** — reducing
+loads elsewhere doesn't help if it lengthens the dependency chain by a
+matching amount.
 
-- **Fewer loads per MAC** — block the computation to reuse a loaded
-  activation across several output rows. The current row-major weight layout
-  doesn't allow it; this is a data-layout change.
+A realistic floor for float32 matrix-vector on this core is roughly **3–4
+cycles/MAC**, not 1. Two structural changes were tried at that floor —
+partial accumulators (won) and input fusion (wash) — which is most of what
+loop-level restructuring can offer here. Going further means changing the
+arithmetic, not the loop:
+
 - **Smaller data** — int8/int16 with the M4's DSP extension (`SMLAD` does
   two MACs per instruction). Requires quantization and re-verification
   against the golden vectors at a looser but justified threshold.

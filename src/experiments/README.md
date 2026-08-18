@@ -17,9 +17,17 @@ via `make experiments` in `bench/`.
 | `cfc_baseline.c.bak` | the original single-accumulator `dense_layer` | 248012 cyc |
 | `cfc_partial_acc.c` | 4 partial accumulators, no FMA flag | 210953 cyc |
 | `cfc_unroll.c` | `#pragma GCC unroll 4`, single accumulator | 202043 cyc (with FMA) |
+| `cfc_fused.c` | ff1/ff2/time_a/time_b share one pass over the input: each element loaded once, 4 MACs against it (`dense_layer4`). Input-side loads drop 4→1 per 4 MACs; 12 instr/4 MACs vs shipped 17. | 169912 cyc — **identical to shipped, no gain** |
 
 `.bak` on the baseline is deliberate: it keeps the old implementation from
 reading as live source. `bench/Makefile` passes `-x c` to compile it anyway.
+
+`cfc_fused.c` is a documented **negative result**: the load-count reduction
+it targeted was real (confirmed by disassembly) but didn't move the cycle
+count at all. Fusing across 4 layers stretches each layer's own
+accumulation from a 32-long chain to 128-long, and that cost canceled the
+saved loads exactly. See NOTES.md's "Fused-input variant" entry for the
+full reasoning — worth reading before trying a similar fusion idea again.
 
 The winner — partial accumulators **+** FMA **+** `always_inline`, at
 169912 cycles — is not here. It was promoted to `src/cfc.c`.
