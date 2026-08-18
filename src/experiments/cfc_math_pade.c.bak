@@ -1,0 +1,72 @@
+#include "cfc_math.h"
+
+/*
+ * Pade[4/3] rational approximation of tanh(x) = x * P(x^2) / Q(x^2), fit
+ * specifically for |x| <= 3.5 (measured actual pre-activation magnitudes
+ * across all 5 golden sequences x 500 steps, both configs, top out around
+ * |x| ~2.9 -- see CLAUDE.md). P, Q are polynomials in u = x^2 only, so the
+ * x^2 substitution alone encodes "only odd powers of x" -- no separate
+ * sign handling needed, oddness falls out of the leading x* factor.
+ *
+ * Coefficients derived from tanh's exact Taylor series (Bernoulli numbers
+ * via Python's Fraction, no floating-point error in the derivation) via
+ * the standard Pade linear system, python/.venv, not estimated by hand.
+ * Verified against math.tanh in double precision: max abs error 3.17e-7
+ * over |x| <= 3.5, comfortably inside the 20% margin over the real ~2.9
+ * operating range.
+ *
+ * Exactly ONE division total (the final P/Q), everything else is a
+ * Horner-form multiply-add chain -- deliberately NOT the continued-fraction
+ * form used previously (7 nested divisions), which measured 30% SLOWER
+ * than newlib on real NUCLEO-F401RE hardware (244138 -> 323712 cycles for
+ * cfc_step_backbone) because Cortex-M4's VFP single-precision divide is
+ * non-pipelined at ~14-16 cycles, dwarfing any call-overhead savings.
+ * A pure polynomial (zero divisions) was also tried and rejected: tanh's
+ * nearest complex singularity is at x = i*pi/2 (|x| ~1.571), well inside
+ * our |x|<=3.5 domain, so a plain power series converges too slowly to be
+ * useful at this domain width (degree 8, all multiply-add, only reached
+ * 6.5e-4) -- a single division buys far more accuracy per operation here
+ * than any amount of pure polynomial degree can.
+ *
+ * Inputs are clamped to +-3.5 before evaluation, not left unclamped: this
+ * fit was never validated outside that range, so clamping first guarantees
+ * bounded, sane (if less accurate) output for any future input that lands
+ * outside the measured operating range, instead of extrapolating the
+ * rational form into territory it wasn't fit for.
+ */
+static float fast_tanhf(float x) {
+    float xc = x;
+    if (xc > 3.5f)
+        xc = 3.5f;
+    else if (xc < -3.5f)
+        xc = -3.5f;
+
+    float u = xc * xc;
+
+    float p = -1.76190652e-08f;
+    p = p * u + 1.11000111e-05f;
+    p = p * u + 0.00311355311f;
+    p = p * u + 0.130952381f;
+    p = p * u + 1.0f;
+
+    float q = 0.000255300255f;
+    q = q * u + 0.0245421245f;
+    q = q * u + 0.464285714f;
+    q = q * u + 1.0f;
+
+    return xc * (p / q);
+}
+
+float cfc_tanh(float x) {
+    return fast_tanhf(x);
+}
+
+float cfc_sigmoid(float x) {
+    /* sigmoid(x) = 0.5 + 0.5*tanh(x/2): reuses the same fast core instead
+     * of a separate approximation, so there is only one to validate. */
+    return 0.5f + 0.5f * fast_tanhf(0.5f * x);
+}
+
+float cfc_lecun_tanh(float x) {
+    return 1.7159f * fast_tanhf(0.666f * x);
+}
