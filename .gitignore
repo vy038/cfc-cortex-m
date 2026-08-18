@@ -1,0 +1,7 @@
+python/.venv/
+*.o
+*.elf
+*.bin
+*.su
+__pycache__/
+*.pyc

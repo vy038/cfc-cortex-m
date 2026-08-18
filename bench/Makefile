@@ -92,6 +92,13 @@ bench-fma-unroll.elf: main.c startup.s $(EXP_SRC)/cfc_unroll.c ../src/cfc_math.c
 # NOTE: there is no bench-partial-acc-fma target -- that variant WON and was
 # promoted to src/cfc.c, so plain `make` builds it. bench.bin IS that binary.
 
+# fused-input experiment: ff1/ff2/time_a/time_b share one pass over the
+# backbone output, loading each input element once instead of 4x. Uses full
+# CFLAGS (with -ffp-contract=fast), same as the shipped implementation it
+# challenges.
+bench-fused.elf: main.c startup.s $(EXP_SRC)/cfc_fused.c ../src/cfc_math.c stm32f4.ld
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c startup.s $(EXP_SRC)/cfc_fused.c ../src/cfc_math.c $(LDLIBS)
+
 # --- diagnostic harnesses (tools, not fixed historical measurements: these
 # track the CURRENT src/cfc.c). instrumented/ram-weights carry their own copy
 # of dense_layer and must be re-synced when src/cfc.c's changes.
@@ -108,7 +115,7 @@ bench-repro.elf: $(EXP_MAIN)/main_repro.c startup.s $(CFC_SRCS) stm32f4.ld
 	$(OBJCOPY) -O binary $< $@
 
 EXPERIMENTS = bench-pade bench-libm bench-stub \
-              bench-partial-acc bench-fma bench-fma-unroll \
+              bench-partial-acc bench-fma bench-fma-unroll bench-fused \
               bench-instrumented bench-ram-weights bench-repro
 
 $(EXPERIMENTS): %: %.elf %.bin
