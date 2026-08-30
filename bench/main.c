@@ -16,13 +16,17 @@ int main(void) {
        Do NOT rely on OpenOCD's reset-init to set this. */
     FLASH_ACR = 0x00000702;
 
+    // init printf and dwt cycle counter
     initialise_monitor_handles();
     DEMCR |= (1u << 24);  /* TRCENA */
     DWT_CTRL |= 1u;       /* CYCCNTENA */
     DWT_CYCCNT = 0;
 
+    // init cfc state (blank)
     cfc_state_t state;
     cfc_init(&state);
+
+    // test inputs
     float input[CFC_INPUT_DIM] = {0.1f, -0.2f, 0.3f, 0.0f, 0.5f, -0.1f};
     float output[CFC_HIDDEN_DIM];
 
@@ -30,10 +34,13 @@ int main(void) {
     uint32_t min_c = 0xFFFFFFFFu, max_c = 0;
     uint64_t sum_c = 0;
 
+    // run the network N times and measure cycles
     for (int i = 0; i < N; i++) {
         uint32_t t0 = DWT_CYCCNT;
+        // actual cell call to the cfc_step_backbone function
         cfc_step_backbone(&state, input, 1.0f, output);
         uint32_t d = DWT_CYCCNT - t0;
+        // clamp min/max and accumulate sum for average
         if (d < min_c)
             min_c = d;
         if (d > max_c)

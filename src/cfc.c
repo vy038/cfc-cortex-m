@@ -38,9 +38,15 @@ __attribute__((always_inline)) static inline void
 dense_layer(const float *in, int in_dim, const float *w, const float *b, int out_dim,
             float *out) {
     for (int o = 0; o < out_dim; o++) {
-        const float *wrow = w + o * in_dim;
+        // pointer to the start of the o-th row of the weight matrix (each row has in_dim elements)
+        // matrix of weights is stored in row-major order, so we can access the o-th row by offsetting by o * in_dim
+        // # of rows = out_dim, # of cols = in_dim
+        const float *wrow = w + o * in_dim; 
+
+        // 4 separate accumulators to maximize instruction-level parallelism and avoid serial dependency chains
         float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
 
+        // divides into 4, excluding remainders, for 4 parallel accumulators
         int n4 = in_dim - (in_dim % 4);
         int i = 0;
         for (; i < n4; i += 4) {
@@ -50,36 +56,49 @@ dense_layer(const float *in, int in_dim, const float *w, const float *b, int out
             acc3 += in[i + 3] * wrow[i + 3];
         }
 
+        // add accumulators and bias for the o-th output neuron
         float acc = b[o] + (acc0 + acc1) + (acc2 + acc3);
-        /* remainder: in_dim=38 (backbone call) leaves 2 here, in_dim=128
-           (the other four calls) leaves 0 */
-        for (; i < in_dim; i++)
-            acc += in[i] * wrow[i];
 
+        // for any extra remainders
+        // in_dim=38 (backbone call) leaves 2 here, in_dim=128 (the other four calls) leaves 0
+        for (; i < in_dim; i++) {
+            acc += in[i] * wrow[i];
+        }
+
+        // set output to the accumulated value for the o-th output neuron
         out[o] = acc;
     }
 }
 
 void cfc_init(cfc_state_t *s) {
+    // clear state to zero at start of sequence
     memset(s->h, 0, sizeof(s->h));
 }
 
 void cfc_step_backbone(cfc_state_t *s, const float *input, float ts, float *output) {
+    // cat is the array that concatenates the input and the hidden state for the dense layer
+    // it is used to produce the backbone output, which is then used to produce the final output
     float cat[CFC_CAT_DIM];
     memcpy(cat, input, CFC_INPUT_DIM * sizeof(float));
     memcpy(cat + CFC_INPUT_DIM, s->h, CFC_HIDDEN_DIM * sizeof(float));
 
+    // backbone is the array that holds the output of the backbone dense layer
+    // populated depending on cat (input + current state) 
     float backbone[CFC_BACKBONE_UNITS];
     dense_layer(cat, CFC_CAT_DIM, CFC_BACKBONE_W, CFC_BACKBONE_B, CFC_BACKBONE_UNITS, backbone);
-    for (int i = 0; i < CFC_BACKBONE_UNITS; i++)
+    for (int i = 0; i < CFC_BACKBONE_UNITS; i++) {
         backbone[i] = cfc_lecun_tanh(backbone[i]);
+    }
 
+    // ff1, ff2, ta, tb are the arrays that hold the output of the four dense layers that produce the final output
+    // used to calculate hidden state
     float ff1[CFC_HIDDEN_DIM], ff2[CFC_HIDDEN_DIM], ta[CFC_HIDDEN_DIM], tb[CFC_HIDDEN_DIM];
     dense_layer(backbone, CFC_BACKBONE_UNITS, CFC_FF1_W, CFC_FF1_B, CFC_HIDDEN_DIM, ff1);
     dense_layer(backbone, CFC_BACKBONE_UNITS, CFC_FF2_W, CFC_FF2_B, CFC_HIDDEN_DIM, ff2);
     dense_layer(backbone, CFC_BACKBONE_UNITS, CFC_TIME_A_W, CFC_TIME_A_B, CFC_HIDDEN_DIM, ta);
     dense_layer(backbone, CFC_BACKBONE_UNITS, CFC_TIME_B_W, CFC_TIME_B_B, CFC_HIDDEN_DIM, tb);
 
+    // calculating the next hidden state and output using the tanh and sigmoid functions
     for (int i = 0; i < CFC_HIDDEN_DIM; i++) {
         float f1 = cfc_tanh(ff1[i]);
         float f2 = cfc_tanh(ff2[i]);
@@ -91,16 +110,20 @@ void cfc_step_backbone(cfc_state_t *s, const float *input, float ts, float *outp
 }
 
 void cfc_step_nobackbone(cfc_state_t *s, const float *input, float ts, float *output) {
+    // cat is the array that concatenates the input and the hidden state for the dense layer
+    // it is used to produce the final output
     float cat[CFC_NB_CAT_DIM];
     memcpy(cat, input, CFC_NB_INPUT_DIM * sizeof(float));
     memcpy(cat + CFC_NB_INPUT_DIM, s->h, CFC_NB_HIDDEN_DIM * sizeof(float));
 
+    // directly calculating the four dense layers that produce the final output, without the backbone
     float ff1[CFC_NB_HIDDEN_DIM], ff2[CFC_NB_HIDDEN_DIM], ta[CFC_NB_HIDDEN_DIM], tb[CFC_NB_HIDDEN_DIM];
     dense_layer(cat, CFC_NB_CAT_DIM, CFC_NB_FF1_W, CFC_NB_FF1_B, CFC_NB_HIDDEN_DIM, ff1);
     dense_layer(cat, CFC_NB_CAT_DIM, CFC_NB_FF2_W, CFC_NB_FF2_B, CFC_NB_HIDDEN_DIM, ff2);
     dense_layer(cat, CFC_NB_CAT_DIM, CFC_NB_TIME_A_W, CFC_NB_TIME_A_B, CFC_NB_HIDDEN_DIM, ta);
     dense_layer(cat, CFC_NB_CAT_DIM, CFC_NB_TIME_B_W, CFC_NB_TIME_B_B, CFC_NB_HIDDEN_DIM, tb);
 
+    // next state and output calculation using the tanh and sigmoid functions
     for (int i = 0; i < CFC_NB_HIDDEN_DIM; i++) {
         float f1 = cfc_tanh(ff1[i]);
         float f2 = cfc_tanh(ff2[i]);

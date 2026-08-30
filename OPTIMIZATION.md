@@ -113,17 +113,59 @@ Lesson: an optimization can change something you weren't measuring.
 
 ---
 
+## Where the 8 cycles per MAC go
+
+169,912 cycles is 8.00 cycles/MAC against a "1 cycle/MAC" naive ideal. That gap is fully accountable from documented instruction timings — no mystery cycles. Timings below are from the Cortex-M4 TRM (ARM DDI 0439, FPU instruction set table and instruction timing chapter), read from the document, not recalled:
+
+| instruction | cycles |
+|---|---|
+| `VFMA.F32` (also `VMLA.F32`) | **3** |
+| `VMUL.F32`, `VADD.F32` | 1 |
+| `VLDR.32` | 2 (consecutive loads pipeline like integer `LDR`, ~1/cycle after the first) |
+| `VDIV.F32` | 14 (retroactively confirms the continued-fraction post-mortem exactly) |
+| integer ALU op | 1 |
+| taken branch | 1 + P, pipeline refill P = 1–3 |
+
+Plus two dependency rules: an FP result consumed by the *immediately following* instruction costs +1, and MAC instructions consume their addend one cycle late (which is what lets a dependent MAC chain partially off the hook).
+
+**The first correction is to the ideal itself: 1 cycle/MAC was never achievable on this core.** `VFMA.F32` takes 3 cycles on a single-issue, in-order pipeline with a non-pipelined FPU multiply-accumulate. The arithmetic alone — before a single operand is loaded — costs 21,248 × 3 = **63,744 cycles**. That is 37% of the entire measured runtime, and it is documented, irreducible FMA execution time.
+
+**Modeling the shipped inner loop.** One iteration (4 MACs, 17 instructions, from the disassembly): 8 `vldr` + 4 `vfma` into four independent accumulators + 4 integer ops + 1 `bne`.
+
+| component | cycles |
+|---|---|
+| 8 loads (two 4-long bursts, pipelined) | ~9–10 |
+| 4 × `VFMA` @ 3 | 12 |
+| 4 integer loop-control ops | 4 |
+| taken branch (1 + P) | 2–4 |
+| **per iteration (4 MACs)** | **27–30** |
+
+The step executes 5,248 of these iterations (4,096 across ff1/ff2/time_a/time_b + 1,152 in the backbone layer), plus 128 two-MAC remainder passes (in_dim=38 isn't a multiple of 4), 256 output-row prologues/epilogues (~18 cycles each: accumulator init, pairwise reduction + bias, store, outer loop), the measured 14,964-cycle activation cost, and memcpy/call glue:
+
+| ledger | optimistic (P=1, loads 9) | middle (P=2, loads 10) | measured |
+|---|---|---|---|
+| inner iterations (5,248) | 141,696 | 152,192 | |
+| remainders + row overhead + glue | ~6,300 | ~6,500 | |
+| activations (measured) | 14,964 | 14,964 | |
+| **total** | **163,204** | **173,700** | **169,912** |
+
+The measured number sits inside the bracket, ~2% from either end. Working backwards, the real hardware averages ~28.3 cycles per iteration — branch refill averaging under 2 and loads pipelining well.
+
+**The model postdicts the other variants, which is the strong evidence it's right:**
+
+- **fma variant** (single accumulator, 1 MAC/iteration: 2 loads ~3 + `cmp` 1 + `vfma` 3 + `bne` 3 = 10 cycles/MAC): predicted 232,452, measured 228,634 — 1.7% error.
+- **fma → shipped delta**: model predicts 10 − 29/4 = 2.75 cycles/MAC saved by amortizing loop control over 4-MAC iterations; measured (228,634 − 169,912)/21,248 = **2.76**. Agreement to 0.4%.
+- **fma-unroll → shipped delta**: same instruction mix as shipped minus the independent chains; measured difference (202,043 − 169,912)/21,248 = **1.51 cycles/MAC**. That number *is* the per-MAC cost of the serial accumulator dependency, measured directly — the stall the partial accumulators removed.
+
+**The floor, computed rather than guessed:** VFMA execution (63,744) + one weight load per MAC that is used exactly once and can never be amortized (≥21,248 pipelined, ~26k realistic) ≈ **85–90k cycles ≈ 4.0–4.2 cycles/MAC** for float32 with this data layout. The shipped 8.00 sits ~3.8 cycles/MAC above that floor, and every one of those cycles is attributed: input loads (~1.0), loop control + branch refill (~1.7), row overhead + remainders (~0.4), activations (~0.7).
+
+Getting below ~90k therefore requires changing the arithmetic, not the loop — which is exactly what the next section concludes. (`SMLAD` does two int16 MACs in a single cycle: the arithmetic floor alone drops 6x.)
+
 ## What's left
-
-8.0 cycles/MAC against a naive 1.0 ideal still looks bad, but that ideal assumes a fully pipelined FMA issuing every cycle with operands already in registers. Per MAC, the real cost is:
-
-- Two loads, one input and one weight. Eight of about 16 instructions in the shipped inner loop are `vldr`. On a single-issue core, a load cycle is a cycle not spent computing.
-- FPU latency not fully hidden, even across four chains.
-- Loop control, about 4 of 16 instructions doing no arithmetic.
 
 The load count looked like the obvious next lever. ff1/ff2/time_a/time_b all read the same 128-element input, so that side isn't actually irreducible the way weight loads are (each weight is used exactly once, no way around that). It was tried and it didn't work. `src/experiments/cfc_fused.c` fuses those four layers into one pass: input loaded once per element, 4 MACs against it. Confirmed by disassembly to actually cut loads (2.0 to 1.25 per MAC, 17 to 12 instructions per 4 MACs), and measured identical to the shipped version on hardware, 169,912 cycles. Fusing across 4 layers stretches each layer's own accumulation from a 32-long chain (shipped) to 128-long, and that cost canceled the saved loads exactly. The binding constraint is FPU latency and the one unavoidable weight load per MAC, not load count in general. Reducing loads elsewhere doesn't help if it lengthens the dependency chain by a matching amount.
 
-A realistic floor for float32 matrix-vector on this core is roughly 3 to 4 cycles/MAC, not 1. Two structural changes were tried at that floor, partial accumulators (won) and input fusion (wash), which is most of what loop-level restructuring can offer here. Going further means changing the arithmetic, not the loop:
+The floor for float32 matrix-vector on this core is ~4.0–4.2 cycles/MAC (computed above: 3.0 of documented VFMA execution + ~1.0–1.2 of irreducible weight loads), not 1. Two structural changes were tried near that floor — partial accumulators (won) and input fusion (wash) — which is most of what loop-level restructuring can offer here. Going further means changing the arithmetic, not the loop:
 
 - Smaller data: int8/int16 with the M4's DSP extension (`SMLAD` does two MACs per instruction). Requires quantization and re-verification against the golden vectors at a looser but justified threshold.
 - Fewer MACs: smaller `hidden_dim`/`backbone_units`. The cheapest option by far, and a model question rather than a code question.
