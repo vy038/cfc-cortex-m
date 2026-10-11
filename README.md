@@ -9,11 +9,11 @@ MIT's CfC liquid neural network, hand-ported to C99 and running on a $15 microco
 
 | | |
 |---|---|
-| Cycles/step | 169,912 (2.65ms, ~377Hz at 64MHz) |
+| Cycles/step | 169,912 (2.02ms, ~494Hz at 84MHz) |
 | Speedup vs. first working version | 37% (12.74 to 8.00 cycles/MAC) |
 | Accuracy vs. PyTorch | 3.8e-7 max abs error, every timestep (threshold 1e-5) |
 | Profiled hot path | `dense_layer`, 96.5% of runtime, measured per call |
-| Notable rejected approach | continued-fraction `tanh`, 30% slower, reverted |
+| Notable rejected approach | continued-fraction `tanh`, ~1% faster than libm but 8% slower than Pade, rejected |
 
 Bare metal: no dynamic allocation, no RTOS, `math.h` only. Every number above was measured on real hardware with the DWT cycle counter, not estimated.
 

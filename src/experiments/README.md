@@ -47,7 +47,6 @@ real one. Its number is what proved activations were only 6% of runtime.
 
 ## Not archived here
 
-The continued-fraction `tanh` (7 terms, ~8 divisions per call) was measured
-at 323712 cycles — 30% *slower* than the library it replaced — and deleted
-rather than kept. Its story is in `OPTIMIZATION.md`; the code isn't worth
-preserving.
+The continued-fraction `tanh` was rewritten as `cfc_math_cf.c` (`make bench-cf`)
+and re-measured with caches on: 267968 cycles vs 270658 for libm and 248018
+for Pade. Its story is in `OPTIMIZATION.md`.

@@ -33,7 +33,7 @@ All measured on hardware, caches enabled, N=1000, `cfc_step_backbone`:
 | FMA + 4x unrolling | 202,043 | 9.51 | -25.4% |
 | partial accumulators + FMA (shipped) | 169,912 | 8.00 | -37.2% |
 
-At the ~64MHz the debugger configures, 169,912 cycles is 2.65ms/step, about 377Hz. Every variant passes the golden-vector test against PyTorch at 1e-5 per timestep across both model configurations.
+At the 84MHz the firmware now sets (it was ~64MHz under OpenOCD's reset-init), 169,912 cycles is 2.02ms/step, about 494Hz (2.65ms, 377Hz at 64MHz). Every variant passes the golden-vector test against PyTorch at 1e-5 per timestep across both model configurations.
 
 ---
 
@@ -43,7 +43,7 @@ At the ~64MHz the debugger configures, 169,912 cycles is 2.65ms/step, about 377H
 
 The firmware never configured `FLASH_ACR`. It ran under whatever OpenOCD's `reset-init` handler left behind, which was `0x102`: prefetch on, instruction and data cache off. Confirmed by reading the register live on the target (`mdw 0x40023C00`).
 
-So every cycle count for the first several rounds was measured with flash caching disabled, on a workload that streams 85KB of weights out of flash at 2 wait states. Enabling the caches (`FLASH_ACR = 0x702`) was worth about 76k cycles, far more than any code change made before or since.
+So every cycle count for the first several rounds was measured with flash caching disabled, on a workload that streams 85KB of weights out of flash at 2 wait states. Enabling the caches (`FLASH_ACR = 0x702`) was worth 85,667 cycles on the libm build (356,325 at 0x102 vs 270,658 at 0x702, re-measured), far more than any code change made before or since.
 
 This also explained an anomaly that had been sitting unexplained: every run reported `min == max == avg` exactly across 1000 calls. That looked like a broken benchmark (loop hoisting, misplaced DWT reads). It wasn't. With caches off, execution was fully dominated by deterministic flash stalls, so every iteration genuinely took identical time. With caches on, normal variation returned (a 58-cycle spread). The harness had been correct all along.
 
@@ -53,7 +53,7 @@ Lesson: verify the machine before optimizing the code.
 
 With 224 transcendental calls per step (128 `lecun_tanh` + 64 `tanh` + 32 `sigmoid`), activations looked like the obvious bottleneck. They weren't.
 
-**Round 1, continued fraction.** Replaced newlib `tanhf`/`expf` with a 7-term continued fraction. Passed the golden test cleanly. Measured 30% slower: 244k to 324k. Cause, confirmed by counting instructions in the disassembly: the expansion needs about 8 `vdiv.f32` per call, and Cortex-M4 single-precision divide is non-pipelined at about 14 cycles. The library call overhead it eliminated was cheaper than the divisions it added.
+**Round 1, continued fraction.** Replaced newlib `tanhf`/`expf` with a 7-term continued fraction. Passed the golden test cleanly. Re-measured with caches on (`bench-cf`): 267,968 cycles vs 270,658 for newlib, i.e. 1.0% faster, not slower. (An earlier "30% slower, 244k to 324k" figure came from early runs that can't be reconstructed and is withdrawn.) The expansion needs 8 `vdiv.f32` per call and Cortex-M4 divide is non-pipelined at about 14 cycles, about 112 cycles per call against libm's roughly 168, so it roughly breaks even with the library. It was rejected because Pade (one divide) is 7.4% faster still.
 
 **Round 2, Pade[4/3].** Rational approximation, algebraically restructured to need exactly one division, verified by counting `vdiv.f32` in the binary. Coefficients derived from tanh's exact Taylor series via exact rational arithmetic, fit to the measured operating range (|x| <= 2.9 across all golden sequences, fit to 3.5 for margin, max error 3.2e-7). Removing 7 of 8 divisions recovered only about 16k cycles, the first hard evidence that divide latency was never the dominant cost.
 
@@ -122,7 +122,7 @@ Lesson: an optimization can change something you weren't measuring.
 | `VFMA.F32` (also `VMLA.F32`) | **3** |
 | `VMUL.F32`, `VADD.F32` | 1 |
 | `VLDR.32` | 2 (consecutive loads pipeline like integer `LDR`, ~1/cycle after the first) |
-| `VDIV.F32` | 14 (retroactively confirms the continued-fraction post-mortem exactly) |
+| `VDIV.F32` | 14 (8 per continued-fraction call is about 112 cycles) |
 | integer ALU op | 1 |
 | taken branch | 1 + P, pipeline refill P = 1–3 |
 
@@ -188,10 +188,10 @@ One subtlety worth recording: `-ffp-contract=fast` alone does nothing on an x86-
 |---|---|
 | Starting point | 270,658 cycles, 12.74 cyc/MAC |
 | Shipped | 169,912 cycles, 8.00 cyc/MAC (-37.2%) |
-| Wall clock at 64MHz | 4.23ms to 2.65ms (237Hz to 377Hz) |
+| Wall clock | at 64MHz 4.23ms to 2.65ms (237Hz to 377Hz); at 84MHz 2.02ms (494Hz) |
 | Time spent on 6% of the problem | 3 rounds |
 | Time spent on 96.5% of the problem | 1 round |
-| Optimizations that made things slower | 1 (30% slower, reverted) |
+| Optimizations that made things slower | 0 confirmed (continued fraction re-measured: ~1% faster than libm) |
 | Bugs found in the measurement setup | 2 (caches off; silent inlining loss) |
 
 Reusable lessons, in the order they'd have saved the most time:
@@ -199,4 +199,4 @@ Reusable lessons, in the order they'd have saved the most time:
 1. Verify the measurement environment before trusting any number. The caches-off bug invalidated every early measurement.
 2. Measure the floor before optimizing a component. One stub build would have redirected three rounds of misdirected work.
 3. Instruction counts are not cycle counts. The variant with worse instructions-per-MAC won, because stalls dominated.
-4. A correctness test is not a performance test. Every rejected variant passed the golden test perfectly, including the one that was 30% slower.
+4. A correctness test is not a performance test. Every rejected variant passed the golden test perfectly, including the slowest activation variants.

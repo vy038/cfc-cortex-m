@@ -17,10 +17,10 @@
  *
  * Exactly ONE division total (the final P/Q), everything else is a
  * Horner-form multiply-add chain -- deliberately NOT the continued-fraction
- * form used previously (7 nested divisions), which measured 30% SLOWER
- * than newlib on real NUCLEO-F401RE hardware (244138 -> 323712 cycles for
- * cfc_step_backbone) because Cortex-M4's VFP single-precision divide is
- * non-pipelined at ~14-16 cycles, dwarfing any call-overhead savings.
+ * form (8 divisions per call): on NUCLEO-F401RE with caches on it measured
+ * 267968 cycles for cfc_step_backbone vs 248018 for this Pade form (and
+ * 270658 for newlib), because Cortex-M4's VFP single-precision divide is
+ * non-pipelined at ~14 cycles.
  * A pure polynomial (zero divisions) was also tried and rejected: tanh's
  * nearest complex singularity is at x = i*pi/2 (|x| ~1.571), well inside
  * our |x|<=3.5 domain, so a plain power series converges too slowly to be

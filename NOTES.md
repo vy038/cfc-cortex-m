@@ -11,7 +11,7 @@ C99 port of the CfC (closed-form continuous-time) recurrent cell from `ncps.torc
 
 Both use `input_dim=6`, `hidden_dim=32`, seed 42.
 
-Current measured performance: 169,912 cycles/step (backbone, caches on, N=1000) = 8.00 cycles/MAC over 21,248 MACs, about 2.65ms, ~377Hz at 64MHz. OPTIMIZATION.md is the full story, read it before touching `dense_layer` or proposing performance work. It records what was tried, what regressed, and why.
+Current measured performance: 169,912 cycles/step (backbone, caches on, N=1000) = 8.00 cycles/MAC over 21,248 MACs, about 2.02ms, ~494Hz at the 84MHz the firmware now sets (2.65ms / 377Hz at the old ~64MHz OpenOCD clock). OPTIMIZATION.md is the full story, read it before touching `dense_layer` or proposing performance work. It records what was tried, what regressed, and why.
 
 ## Commands
 
@@ -83,14 +83,14 @@ Both this structure and `-ffp-contract=fast` change float rounding. `test_golden
 
 - Get the floor before optimizing a component. The stub build (`src/experiments/cfc_math_stub.c`, activations = `return x;`) proved activations were only 6% of runtime, after three rounds had already been spent on them. One stub build first would have redirected all of it.
 - Instruction count is not cycle count. The variant with worse instructions-per-MAC won on hardware, because stalls dominated.
-- A correctness test is not a performance test. Every rejected variant passed `test_golden` perfectly, including one that was 30% slower.
+- A correctness test is not a performance test. Every rejected variant passed `test_golden` perfectly, including the slowest activation variants.
 - Sanity-check any cycle count against a rough MAC-count estimate before trusting it. `DWT->CYCCNT` only increments while a debug probe is attached (the debug power domain gates it), and a frozen counter reads as a plausible small number, not an obvious error.
 
 ### Hardware / build environment
 
 - Target board is NUCLEO-F401RE (STM32F401RE), not an F407 as early planning assumed: 512K flash, 96K SRAM (not 128K, corrected in `bench/stm32f4.ld`'s `RAM LENGTH`). Still Cortex-M4F with FPU, so the `-mfloat-abi=hard -mfpu=fpv4-sp-d16` build is unaffected. Any clock-tree or peripheral code added later must not assume F407 behavior (F401 has no Ethernet/camera and different timers).
 - The firmware sets `FLASH_ACR = 0x00000702` (2 wait states + PRFTEN + ICEN + DCEN) as the first statement in `main()`. Previously nothing touched it and the chip ran under OpenOCD's reset-init value `0x102`, both caches off, which invalidated every early measurement. After flashing, confirm with telnet `mdw 0x40023C00`; expect `0x00000702`. If it reads `0x102` the write was clobbered and the measurement is invalid.
-- RCC is still not configured by firmware. The clock is whatever OpenOCD sets (about 64MHz); standalone without a debugger this boots to the 16MHz HSI reset default, roughly 4x slower than anything measured. Explicit RCC setup is outstanding and is a hard prerequisite for Stride integration.
+- Firmware configures the clock itself (`bench/clock.h`): HSI -> PLL -> 84MHz SYSCLK, APB1 42MHz, so it no longer depends on OpenOCD's reset-init or boots at 16MHz. Verified by register readback after run: ACR `0x702`, CFGR `0x100a` (SWS=PLL), PLLCFGR `0x07015410`. Cycle counts (DWT) are unchanged by the clock; only wall time moves. Remaining prerequisite for Stride integration: confirm the board's supply is 2.7-3.6V (2 wait states at 84MHz assume it).
 - `bench/Makefile` uses `-ffunction-sections -fdata-sections` and `-Wl,--gc-sections` so the linker drops the unused `cfc_step_*` and its weight arrays. Without them both configs pull in both weight sets and `.text` is meaningless for comparison (this bit the project once). With them, flash deltas are valid. `test/Makefile` doesn't need them.
 - `bench/Makefile` keeps `CFLAGS_BASE` (pre-FMA flags) separate from `CFLAGS` only so archived experiments reproduce their recorded numbers. Don't collapse them.
 
@@ -122,7 +122,9 @@ All on hardware, caches on, N=1000, `cfc_step_backbone`, 21,248 MACs:
 | partial acc + FMA (shipped) | 169,912 | 8.00 | |
 | fused-input (4 layers, shared input load) | 169,912 | 8.00 | identical to shipped, no gain |
 
-Rejected: continued-fraction `tanh` (about 8 `vdiv.f32`/call) measured 323,712, 30% slower than the library it replaced; M4 float divide is non-pipelined at about 14 cycles. Deleted, not archived.
+Rejected: continued-fraction `tanh` (8 `vdiv.f32`/call) measured 267,968 cycles with caches on, 1.0% faster than newlib's 270,658 and 8.0% slower than Pade's 248,018. It lost to Pade, not to the library; M4 float divide is non-pipelined at about 14 cycles. Re-measured 2026-10 with `bench-cf` (`src/experiments/cfc_math_cf.c`). An earlier claim of "30% slower" (244k to 324k) came from early runs whose conditions can't be reconstructed and is withdrawn.
+
+Cache effect, same libm build, `FLASH_ACR` 0x702 vs 0x102: 270,658 vs 356,325 cycles, so the caches are worth 85,667 cycles (24%).
 
 Also settled: moving all 85KB of weights to SRAM is worth only 4.6% and costs 84.5KB of a 96KB budget, not taken. Measurement is reproducible to about 50 cycles (999/1000 calls identical; only the first call differs, +49, cold cache).
 

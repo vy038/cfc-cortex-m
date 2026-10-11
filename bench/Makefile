@@ -74,6 +74,9 @@ bench-pade.elf: main.c startup.s $(EXP_SRC)/cfc_baseline.c.bak ../src/cfc_math.c
 bench-libm.elf: main.c startup.s $(EXP_SRC)/cfc_baseline.c.bak $(EXP_SRC)/cfc_math_libm.c stm32f4.ld
 	$(CC) $(CFLAGS_BASE) $(LDFLAGS) -o $@ main.c startup.s $(BASELINE_CFC) $(EXP_SRC)/cfc_math_libm.c $(LDLIBS)
 
+bench-cf.elf: main.c startup.s $(EXP_SRC)/cfc_baseline.c.bak $(EXP_SRC)/cfc_math_cf.c stm32f4.ld
+	$(CC) $(CFLAGS_BASE) $(LDFLAGS) -o $@ main.c startup.s $(BASELINE_CFC) $(EXP_SRC)/cfc_math_cf.c $(LDLIBS)
+
 # stub is DELIBERATELY numerically wrong (identity activations): timing floor
 # only, fails test_golden by design, never a shippable build.
 bench-stub.elf: main.c startup.s $(EXP_SRC)/cfc_baseline.c.bak $(EXP_SRC)/cfc_math_stub.c stm32f4.ld
@@ -114,7 +117,7 @@ bench-repro.elf: $(EXP_MAIN)/main_repro.c startup.s $(CFC_SRCS) stm32f4.ld
 %.bin: %.elf
 	$(OBJCOPY) -O binary $< $@
 
-EXPERIMENTS = bench-pade bench-libm bench-stub \
+EXPERIMENTS = bench-pade bench-libm bench-cf bench-stub \
               bench-partial-acc bench-fma bench-fma-unroll bench-fused \
               bench-instrumented bench-ram-weights bench-repro
 

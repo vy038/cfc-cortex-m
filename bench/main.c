@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "cfc.h"
+#include "clock.h"
 
 extern void initialise_monitor_handles(void);
 
@@ -11,10 +12,16 @@ extern void initialise_monitor_handles(void);
 
 #define FLASH_ACR (*(volatile uint32_t *)0x40023C00)
 
+/* Override with -DFLASH_ACR_VAL=0x102 to measure with caches off. */
+#ifndef FLASH_ACR_VAL
+#define FLASH_ACR_VAL 0x00000702
+#endif
+
 int main(void) {
     /* 2 wait states + prefetch + instruction cache + data cache.
        Do NOT rely on OpenOCD's reset-init to set this. */
-    FLASH_ACR = 0x00000702;
+    FLASH_ACR = FLASH_ACR_VAL;
+    clock_init_84mhz();
 
     // init printf and dwt cycle counter
     initialise_monitor_handles();

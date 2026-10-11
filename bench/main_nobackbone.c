@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "cfc.h"
+#include "clock.h"
 
 extern void initialise_monitor_handles(void);
 
@@ -15,6 +16,7 @@ int main(void) {
     /* 2 wait states + prefetch + instruction cache + data cache.
        Do NOT rely on OpenOCD's reset-init to set this. */
     FLASH_ACR = 0x00000702;
+    clock_init_84mhz();
 
     initialise_monitor_handles();
     DEMCR |= (1u << 24);  /* TRCENA */
